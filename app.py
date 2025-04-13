@@ -4,6 +4,7 @@ import plotly.graph_objs as go
 import pandas as pd
 import numpy as np
 import networkx as nx
+from dotenv import load_dotenv
 
 # Import modules for our other features
 from utils.data_loader import download_and_load_covid_confirmed_data
@@ -11,12 +12,16 @@ from ml.parameter_estimation import estimate_parameters, sir_model
 from simulations.agent_based import simulate_agent_based_positions
 from models.sde_sir import simulate_sde_sir
 from models.ode_sir import simulate_ode_sir
+from models.seir import simulate_seir
+from models.sird import simulate_sird
+
+load_dotenv()
 
 # Load COVID‑19 data globally (for parameter estimation tab)
 df_confirmed = download_and_load_covid_confirmed_data()
 countries = sorted(df_confirmed["Country/Region"].unique())
 
-app = dash.Dash(__name__)
+app = dash.Dash(__name__, suppress_callback_exceptions=True)
 
 app.layout = html.Div([
     dcc.Tabs([
@@ -100,6 +105,48 @@ app.layout = html.Div([
                 html.Label("Travel Rate"),
                 dcc.Slider(id="travel-rate-slider", min=0.001, max=0.05, step=0.001, value=0.01),
                 dcc.Graph(id="network-dynamics-graph")
+            ], style={'padding': 20})
+        ]),
+        dcc.Tab(label="Multi-Compartment Models", children=[
+            html.Div([
+                html.H2("Multi-Compartment Models"),
+                html.Label("Select Model Type"),
+                dcc.Dropdown(
+                    id="model-type-dropdown",
+                    options=[
+                        {"label": "SIR", "value": "SIR"},
+                        {"label": "SEIR", "value": "SEIR"},
+                        {"label": "SIRD", "value": "SIRD"}
+                    ],
+                    value="SIR"  # default to SIR so its sliders are visible
+                ),
+                html.Br(),
+                # Container that holds all slider groups (they always exist)
+                html.Div([
+                    html.Div([
+                        html.Label("SIR Beta"),
+                        dcc.Slider(id="sir-beta", min=0.1, max=2.0, step=0.1, value=0.5),
+                        html.Label("SIR Gamma"),
+                        dcc.Slider(id="sir-gamma", min=0.05, max=1.0, step=0.05, value=0.1)
+                    ], id="sir-sliders", style={"display": "block"}),
+                    html.Div([
+                        html.Label("SEIR Beta"),
+                        dcc.Slider(id="seir-beta", min=0.1, max=2.0, step=0.1, value=0.5),
+                        html.Label("SEIR Gamma"),
+                        dcc.Slider(id="seir-gamma", min=0.05, max=1.0, step=0.05, value=0.1),
+                        html.Label("SEIR Sigma (Incubation Rate)"),
+                        dcc.Slider(id="seir-sigma", min=0.1, max=1.0, step=0.1, value=0.2)
+                    ], id="seir-sliders", style={"display": "none"}),
+                    html.Div([
+                        html.Label("SIRD Beta"),
+                        dcc.Slider(id="sird-beta", min=0.1, max=2.0, step=0.1, value=0.5),
+                        html.Label("SIRD Gamma"),
+                        dcc.Slider(id="sird-gamma", min=0.05, max=1.0, step=0.05, value=0.1),
+                        html.Label("SIRD Mu (Mortality Rate)"),
+                        dcc.Slider(id="sird-mu", min=0.01, max=0.5, step=0.01, value=0.05)
+                    ], id="sird-sliders", style={"display": "none"})
+                ], id="model-params-div"),
+                dcc.Graph(id="multi-compartment-graph")
             ], style={'padding': 20})
         ])
     ])
@@ -428,6 +475,83 @@ def update_network_dynamics(num_patches, connectivity_prob, travel_rate):
                         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)
                     ))
     return fig
+
+# Callback to update the visibility of slider groups based on the selected model.
+@app.callback(
+    [Output("sir-sliders", "style"),
+     Output("seir-sliders", "style"),
+     Output("sird-sliders", "style")],
+    Input("model-type-dropdown", "value")
+)
+def update_slider_visibility(model_type):
+    if model_type == "SIR":
+        return {"display": "block"}, {"display": "none"}, {"display": "none"}
+    elif model_type == "SEIR":
+        return {"display": "none"}, {"display": "block"}, {"display": "none"}
+    elif model_type == "SIRD":
+        return {"display": "none"}, {"display": "none"}, {"display": "block"}
+    else:
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}
+
+# Callback for the Multi-Compartment Models tab graph.
+@app.callback(
+    Output("multi-compartment-graph", "figure"),
+    [
+        Input("model-type-dropdown", "value"),
+        Input("sir-beta", "value"),
+        Input("sir-gamma", "value"),
+        Input("seir-beta", "value"),
+        Input("seir-gamma", "value"),
+        Input("seir-sigma", "value"),
+        Input("sird-beta", "value"),
+        Input("sird-gamma", "value"),
+        Input("sird-mu", "value")
+    ]
+)
+def update_multi_compartment_graph(model_type, sir_beta, sir_gamma,
+                                   seir_beta, seir_gamma, seir_sigma,
+                                   sird_beta, sird_gamma, sird_mu):
+    T = 50
+    dt = 0.5
+    if model_type == "SIR":
+        S0, I0, R0 = 990, 10, 0
+        beta = sir_beta if sir_beta is not None else 0.5
+        gamma = sir_gamma if sir_gamma is not None else 0.1
+        S, I, R, t = simulate_ode_sir(beta, gamma, S0, I0, R0, T, dt)
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=t, y=S, mode='lines', name='S'))
+        fig.add_trace(go.Scatter(x=t, y=I, mode='lines', name='I'))
+        fig.add_trace(go.Scatter(x=t, y=R, mode='lines', name='R'))
+        fig.update_layout(title="SIR Model", xaxis_title="Time (days)", yaxis_title="Population")
+        return fig
+    elif model_type == "SEIR":
+        S0, E0, I0, R0 = 980, 10, 10, 0
+        beta = seir_beta if seir_beta is not None else 0.5
+        gamma = seir_gamma if seir_gamma is not None else 0.1
+        sigma = seir_sigma if seir_sigma is not None else 0.2
+        S, E, I, R, t = simulate_seir(beta, gamma, sigma, S0, E0, I0, R0, T, dt)
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=t, y=S, mode='lines', name='S'))
+        fig.add_trace(go.Scatter(x=t, y=E, mode='lines', name='E'))
+        fig.add_trace(go.Scatter(x=t, y=I, mode='lines', name='I'))
+        fig.add_trace(go.Scatter(x=t, y=R, mode='lines', name='R'))
+        fig.update_layout(title="SEIR Model", xaxis_title="Time (days)", yaxis_title="Population")
+        return fig
+    elif model_type == "SIRD":
+        S0, I0, R0, D0 = 980, 10, 0, 10
+        beta = sird_beta if sird_beta is not None else 0.5
+        gamma = sird_gamma if sird_gamma is not None else 0.1
+        mu = sird_mu if sird_mu is not None else 0.05
+        S, I, R, D, t = simulate_sird(beta, gamma, mu, S0, I0, R0, D0, T, dt)
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=t, y=S, mode='lines', name='S'))
+        fig.add_trace(go.Scatter(x=t, y=I, mode='lines', name='I'))
+        fig.add_trace(go.Scatter(x=t, y=R, mode='lines', name='R'))
+        fig.add_trace(go.Scatter(x=t, y=D, mode='lines', name='D'))
+        fig.update_layout(title="SIRD Model", xaxis_title="Time (days)", yaxis_title="Population")
+        return fig
+    else:
+        return go.Figure()
 
 
 if __name__ == '__main__':
