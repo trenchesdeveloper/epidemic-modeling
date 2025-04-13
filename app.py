@@ -556,3 +556,5 @@ def update_multi_compartment_graph(model_type, sir_beta, sir_gamma,
 
 if __name__ == '__main__':
     app.run_server(debug=True)
+server = app.server
+
